@@ -1,13 +1,20 @@
 # 제로월드 예약 자동화 가이드
 
 ## 🎯 개요
-제로월드 (강남점 등 다중 지점)의 방탈출 예약을 자동화하는 Python 스크립트입니다.
+제로월드 (강남점, 홍대점) 방탈출 예약을 자동화하는 Python 스크립트입니다.
+
+## ✨ 주요 특징
+- **다중 날짜 지원**: 여러 날짜를 우선순위별로 자동 시도
+- **시간 구간 예약**: 원하는 시간대 내에서 자동 선택
+- **날짜별 독립 테마 매핑**: 각 날짜별로 다른 테마 ID 자동 처리
+- **실시간 모니터링**: 주기적으로 예약 가능 시간 확인
+- **안정적인 테마 관리**: 테마명 기반으로 동적 ID 매칭
 
 ## 🛠️ 설치 및 설정
 
 ### 1. 필수 라이브러리 설치
 ```bash
-pip3 install selenium requests beautifulsoup4
+pip3 install selenium requests
 ```
 
 ### 2. ChromeDriver 설치
@@ -19,329 +26,263 @@ brew install chromedriver
 # https://chromedriver.chromium.org/
 ```
 
-### 3. 환경 설정
+### 3. 환경 설정 (config.py)
 ```python
-# config.py 파일 생성
-RESERVATION_CONFIG = {
-    'target_date': '2025-08-18',  # YYYY-MM-DD 형식
-    'target_time': '19:00',       # HH:MM 형식
-    'theme_id': '1',              # 테마 ID
-    'store': 'gangnam',           # 지점 선택 ('gangnam' 등)
-    'check_interval': 30,         # 확인 주기 (초)
-    'user_info': {
-        'name': '홍길동',
-        'phone': '010-1234-5678',
-        'email': 'hong@example.com',
-        'people_count': 4
+STORE_CONFIGS = {
+    'gangnam': {
+        'name': '제로월드 강남점',
+        'base_url': 'https://zerogangnam.com',
+        'reservation_url': 'https://zerogangnam.com/reservation'
+    },
+    'hongdae': {
+        'name': '제로월드 홍대점',
+        'base_url': 'https://zerohongdae.com',
+        'reservation_url': 'https://zerohongdae.com/reservation'
     }
 }
 
-# 지점 설정 (STORE_CONFIGS)
-STORE_CONFIGS = {
-    'gangnam': {
-        'name': '강남점',
-        'base_url': 'https://gangnam.zeroworld.co.kr',
-        'reservation_url': 'https://gangnam.zeroworld.co.kr/reservation'
+RESERVATION_CONFIG = {
+    'store': 'hongdae',               # 'gangnam' 또는 'hongdae'
+    'target_dates': [                 # 여러 날짜 지원 (우선순위 순)
+        '2025-08-24',
+        '2025-08-25',
+        '2025-08-26'
+    ],
+    'time_range': {                  # 원하는 시간 구간
+        'start': '11:00',            # 시작 시간 (HH:MM)
+        'end': '21:00'               # 종료 시간 (HH:MM)
+    },
+    'theme': '층간소음',               # 테마명
+    'check_interval': 30,            # 확인 주기 (초)
+    'user_info': {
+        'name': '홍길동',
+        'phone': '010-1234-5678',
+        'people_count': 4
     }
-    # 다른 지점들 추가 가능
 }
 ```
 
 ## 📋 사용 방법
 
-### 1. 기본 사용법
+### 1. 간단 실행
+```bash
+cd zeroworld
+python3 zeroworld_reservation.py
+```
+
+### 2. 실행 결과 예시
+```
+INFO:__main__:예약 시스템 초기화: 제로월드 홍대점
+테마 정보 로드 중...
+테마 정보 로드 시도 1/3...
+대상 테마: '층간소음'
+현재 사용 가능한 테마: ['층간소음', 'NOX', '타임머신']
+📅 3개 날짜에 대해 30초마다 확인합니다...
+
+[1/3] 📅 예약 확인: 2025-08-24 11:00-21:00 (테마: 층간소음)
+INFO:__main__:예약 확인: 2025-08-24 11:00-21:00 (테마: 층간소음)
+INFO:__main__:테마명 변환: '층간소음' -> ID '61' (2025-08-24)
+INFO:__main__:테마 '층간소음'에서 0개의 예약 가능한 시간 발견: []
+❌ 예약 실패: 2025-08-24 - 테마 '층간소음'에서 예약 가능한 시간 없음
+
+[2/3] 📅 예약 확인: 2025-08-25 11:00-21:00 (테마: 층간소음)
+INFO:__main__:테마명 변환: '층간소음' -> ID '60' (2025-08-25)
+INFO:__main__:테마 '층간소음'에서 2개의 예약 가능한 시간 발견: ['14:30', '18:45']
+✅ 예약 성공: 2025-08-25 14:30 - 예약이 완료되었습니다
+```
+
+### 3. 프로그래밍 방식 사용
 ```python
 from zeroworld_reservation import ZeroWorldReservation
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# 예약 시스템 초기화 (지점 지정)
-reservation = ZeroWorldReservation(store='gangnam')
+# 예약 시스템 초기화
+reservation = ZeroWorldReservation(store='hongdae')
 
-# 일주일 후 오후 7시 예약 시도
-target_date = datetime.now() + timedelta(days=7)
-result = reservation.make_reservation(
-    date=target_date,
-    target_time="19:00",
-    theme_id="1",
-    user_info={
-        'name': '홍길동',
-        'phone': '010-1234-5678',
-        'people_count': 4  # email 필드는 실제 코드에서 사용되지 않음
-    }
-)
+# 특정 날짜 예약 시도
+target_date = datetime(2025, 8, 25)
+time_range = {'start': '14:00', 'end': '20:00'}
 
-print(result)
-```
-
-### 2. 모니터링 모드
-```python
-# 주기적으로 확인하며 예약 가능할 때까지 대기
-result = reservation.monitor_and_book(
+result = reservation.check_and_book(
     target_date=target_date,
-    target_time="19:00",
-    theme_id="1",
-    user_info=user_info,
-    check_interval=30  # 30초마다 확인
-)
-```
-
-### 3. 페이지 구조 분석
-```python
-# 사이트 구조가 변경되었을 때 분석 실행
-structure = reservation.analyze_page_structure()
-print(json.dumps(structure, indent=2, ensure_ascii=False))
-```
-
-## 🔧 커스터마이징
-
-### 1. 선택자 수정
-사이트 구조가 변경되면 다음 메서드들의 선택자를 수정해야 합니다:
-
-```python
-def find_date_selector(self, target_date):
-    # 실제 사이트의 날짜 선택자에 맞게 수정
-    selectors = [
-        f'[data-date="{date_str}"]',
-        f'.calendar-day[data-value="{date_str}"]',
-        # 추가 선택자들...
-    ]
-```
-
-### 2. API 엔드포인트 수정
-```python
-def get_available_times(self, target_date, user_info=None):
-    # 실제 사용되는 API 엔드포인트
-    api_url = f"{self.base_url}/reservation/theme"
-    # POST 요청으로 예약 가능한 시간 조회
-```
-
-## 🕵️ 사이트 분석 방법
-
-### 1. 개발자 도구 사용
-1. Chrome에서 F12 키로 개발자 도구 열기
-2. Network 탭에서 예약 과정의 네트워크 요청 모니터링
-3. Elements 탭에서 HTML 구조 분석
-
-### 2. 중요 확인 사항
-- **폼 구조**: 예약 폼의 action, method, 필드명 확인
-- **AJAX 요청**: JavaScript로 처리되는 비동기 요청 패턴
-- **인증 토큰**: CSRF 토큰이나 세션 관리 방식
-- **캡챠**: reCAPTCHA나 기타 봇 방지 시스템
-- **시간 형식**: 날짜/시간 데이터 전송 형식
-
-### 3. 실제 분석 예시
-```javascript
-// 브라우저 콘솔에서 실행
-// 1. 예약 관련 전역 변수 찾기
-Object.keys(window).filter(key => 
-    ['reservation', 'booking', 'calendar'].some(term => 
-        key.toLowerCase().includes(term)
-    )
-);
-
-// 2. AJAX 요청 감지
-const originalFetch = window.fetch;
-window.fetch = function(...args) {
-    console.log('Fetch:', args);
-    return originalFetch.apply(this, args);
-};
-
-// 3. 폼 구조 분석
-Array.from(document.forms).map(form => ({
-    action: form.action,
-    method: form.method,
-    fields: Array.from(form.elements).map(el => el.name)
-}));
-```
-
-## 📊 예약 데이터 구조
-
-제로월드 사이트에서 발견된 데이터 구조:
-```json
-{
-    "times": {
-        "1": [
-            {
-                "time": "10:00:00",
-                "reservation": false
-            },
-            {
-                "time": "19:00:00",
-                "reservation": true
-            }
-        ]
+    time_range=time_range,
+    theme_name='층간소음',
+    user_info={
+        'name': '김동원',
+        'phone': '010-7487-9901',
+        'people_count': 2
     }
+)
+
+if result["success"]:
+    print(f"✅ 예약 성공: {result['time']} - {result['message']}")
+else:
+    print(f"❌ 예약 실패: {result['message']}")
+```
+
+## ⏰ 주요 특징 상세
+
+### 1. 날짜별 독립 테마 매핑
+각 날짜마다 테마 ID가 다를 수 있습니다. 시스템이 자동으로 처리합니다.
+
+```
+2025-08-24: '층간소음' -> ID '61'
+2025-08-25: '층간소음' -> ID '60' 
+2025-08-26: '층간소음' -> ID '60'
+```
+
+### 2. 시간 구간 예약
+원하는 시간대를 범위로 지정하면 해당 구간 내에서 가장 빠른 시간으로 자동 예약:
+
+```python
+'time_range': {
+    'start': '14:00',    # 시작 시간
+    'end': '20:00'       # 종료 시간
+}
+
+# 실행 시 자동 선택:
+# 14:30, 18:45가 가능하면 → 14:30 선택 (더 빠른 시간)
+```
+
+### 3. 다중 날짜 우선순위 처리
+```python
+'target_dates': [
+    '2025-08-24',  # 1순위 - 먼저 시도
+    '2025-08-25',  # 2순위 - 1순위 실패 시
+    '2025-08-26'   # 3순위 - 2순위 실패 시
+]
+```
+
+### 4. 실시간 모니터링
+```
+📅 3개 날짜에 대해 30초마다 확인합니다...
+[1/3] 📅 예약 확인: 2025-08-24 (실패)
+[2/3] 📅 예약 확인: 2025-08-25 (실패)  
+[3/3] 📅 예약 확인: 2025-08-26 (실패)
+모든 날짜에서 예약 불가. 30초 후 다시 시도...
+
+[1/3] 📅 예약 확인: 2025-08-24 (실패)
+[2/3] 📅 예약 확인: 2025-08-25 (성공!) ← 예약 완료
+```
+
+## 🎭 테마 관리
+
+### 1. 자동 테마 감지
+- 시스템이 자동으로 사용 가능한 테마 목록을 가져옵니다
+- 날짜별로 다른 테마 ID를 자동 매칭합니다
+- 테마명만 설정하면 ID는 자동 처리됩니다
+
+### 2. 지원하는 테마 (예시)
+```
+홍대점: '층간소음', 'NOX', '타임머신'
+강남점: '미스터리 하우스', '공포의 병원' 등
+```
+
+## 🛠️ 설정 상세
+
+### 1. 지점 설정
+```python
+'store': 'hongdae'  # 또는 'gangnam'
+```
+
+### 2. 시간 설정
+```python
+'check_interval': 30  # 확인 주기 (초)
+                      # 30 = 30초마다 확인
+                      # 60 = 1분마다 확인
+```
+
+### 3. 사용자 정보
+```python
+'user_info': {
+    'name': '김동원',        # 예약자명
+    'phone': '010-1234-5678', # 전화번호
+    'people_count': 2         # 인원수
 }
 ```
 
-- `times`: 테마별 시간 슬롯 정보
-- `time`: 시간 (HH:MM:SS 형식)
-- `reservation`: true면 예약됨, false면 예약 가능
+## 📊 시스템 구조
 
-## 🤖 고급 자동화 기능
-
-### 1. 다중 테마 모니터링
+### 1. 핵심 기능
 ```python
-def monitor_multiple_themes(self, target_date, target_time, theme_preferences, user_info):
-    """여러 테마 중 먼저 예약 가능한 것으로 예약"""
-    while True:
-        for theme_id in theme_preferences:
-            available_times = self.get_available_times(target_date, user_info)
-            if target_time in available_times:
-                return self.make_reservation(target_date, target_time, theme_id, user_info)
-        time.sleep(30)
+ZeroWorldReservation()
+├── get_available_times_for_theme()  # 예약 가능 시간 조회
+├── check_and_book()                 # 예약 확인 및 시도
+├── make_reservation()               # 실제 예약 실행
+└── extract_theme_info()             # 테마 정보 추출
 ```
 
-### 2. 스마트 시간 선택
+### 2. 데이터 구조
 ```python
-def find_best_time_slot(self, target_date, preferred_times):
-    """선호 시간대 중 예약 가능한 시간 찾기"""
-    available_times = self.get_available_times(target_date)
-    
-    for preferred_time in preferred_times:
-        if preferred_time in available_times:
-            return preferred_time
-    
-    return None
-```
-
-### 3. 알림 기능
-```python
-import smtplib
-from email.mime.text import MIMEText
-
-def send_notification(self, message):
-    """예약 결과 이메일 알림"""
-    msg = MIMEText(message, 'plain', 'utf-8')
-    msg['Subject'] = '제로월드 예약 결과'
-    msg['From'] = 'your_email@gmail.com'
-    msg['To'] = 'recipient@gmail.com'
-    
-    # Gmail SMTP 설정 필요
-    server = smtplib.SMTP('smtp.gmail.com', 587)
-    server.starttls()
-    server.login('your_email@gmail.com', 'app_password')
-    server.send_message(msg)
-    server.quit()
-```
-
-## 🛡️ 보안 및 안정성
-
-### 1. 요청 제한
-```python
-import random
-
-def add_random_delay(self):
-    """무작위 지연으로 봇 탐지 회피"""
-    delay = random.uniform(1, 3)
-    time.sleep(delay)
-
-def rotate_user_agent(self):
-    """User-Agent 로테이션"""
-    user_agents = [
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        # 더 많은 User-Agent 추가
-    ]
-    return random.choice(user_agents)
-```
-
-### 2. 에러 처리
-```python
-def safe_click(self, element):
-    """안전한 클릭 (요소가 클릭 가능할 때까지 대기)"""
-    try:
-        WebDriverWait(self.driver, 10).until(
-            EC.element_to_be_clickable(element)
-        )
-        element.click()
-        return True
-    except Exception as e:
-        self.logger.error(f"클릭 실패: {e}")
-        return False
-```
-
-### 3. 세션 관리
-```python
-def maintain_session(self):
-    """세션 유지를 위한 주기적 요청"""
-    heartbeat_url = f"{self.base_url}/api/heartbeat"
-    try:
-        self.session.get(heartbeat_url)
-        self.logger.info("세션 갱신 완료")
-    except:
-        self.logger.warning("세션 갱신 실패")
+# 날짜별 테마 매핑
+date_theme_mappings = {
+    '2025-08-24': {'층간소음': '61', 'NOX': '62'},
+    '2025-08-25': {'층간소음': '60', 'NOX': '61'},
+    '2025-08-26': {'층간소음': '60', 'NOX': '61'}
+}
 ```
 
 ## 🔍 문제 해결
 
-### 자주 발생하는 문제들
+### 자주 발생하는 문제
 
-1. **ChromeDriver 버전 불일치**
+1. **ChromeDriver 설치 문제**
    ```bash
-   # 자동 관리 도구 사용
-   pip install webdriver-manager
-   ```
-   ```python
-   from webdriver_manager.chrome import ChromeDriverManager
-   service = Service(ChromeDriverManager().install())
-   ```
-
-2. **요소를 찾을 수 없음**
-   ```python
-   # 명시적 대기 사용
-   element = WebDriverWait(driver, 20).until(
-       EC.presence_of_element_located((By.ID, "element-id"))
-   )
+   # macOS
+   brew install chromedriver
+   
+   # 또는 webdriver-manager 사용
+   pip3 install webdriver-manager
    ```
 
-3. **CSRF 토큰 처리**
-   ```python
-   def get_csrf_token(self):
-       token_element = self.driver.find_element(By.NAME, "csrf_token")
-       return token_element.get_attribute("value")
+2. **테마를 찾을 수 없음**
+   ```
+   ValueError: 테마를 찾을 수 없습니다: '층간소음'. 
+   2025-08-24에 사용 가능한 테마: ['NOX', '타임머신']
+   ```
+   → config.py에서 정확한 테마명으로 수정
+
+3. **예약 페이지 로딩 실패**
+   ```
+   INFO:__main__:⚠️ 테마 정보 로드 실패. API 응답을 확인해주세요.
+   ```
+   → 네트워크 연결 및 사이트 상태 확인
+
+4. **Selenium 오류**
+   ```bash
+   # Chrome 업데이트 후 ChromeDriver도 업데이트
+   brew upgrade chromedriver
    ```
 
-4. **JavaScript 로딩 완료 대기**
-   ```python
-   def wait_for_page_load(self):
-       WebDriverWait(self.driver, 30).until(
-           lambda driver: driver.execute_script("return jQuery.active == 0")
-       )
-   ```
+### 로그 이해하기
 
-## 📈 성능 최적화
-
-### 1. 브라우저 최적화
-```python
-chrome_options = Options()
-chrome_options.add_argument('--disable-extensions')
-chrome_options.add_argument('--disable-gpu')
-chrome_options.add_argument('--disable-dev-shm-usage')
-chrome_options.add_argument('--no-sandbox')
-chrome_options.add_argument('--disable-images')  # 이미지 로딩 비활성화
+**성공적인 실행:**
+```
+INFO:__main__:예약 시스템 초기화: 제로월드 홍대점
+INFO:__main__:테마명 변환: '층간소음' -> ID '61' (2025-08-24)
+INFO:__main__:테마 '층간소음'에서 2개의 예약 가능한 시간 발견: ['14:30', '18:45']
+✅ 예약 성공: 2025-08-25 14:30 - 예약이 완료되었습니다
 ```
 
-### 2. 메모리 관리
-```python
-def periodic_cleanup(self):
-    """주기적 메모리 정리"""
-    if self.driver:
-        self.driver.delete_all_cookies()
-        self.driver.execute_script("window.localStorage.clear();")
+**예약 불가 상황:**
+```
+INFO:__main__:테마 '층간소음'에서 0개의 예약 가능한 시간 발견: []
+❌ 예약 실패: 2025-08-24 - 테마 '층간소음'에서 예약 가능한 시간 없음
 ```
 
-## 📞 지원 및 문의
+## 📋 체크리스트
 
-### 개발자 연락처
-- 이 스크립트에 대한 문의사항이 있으시면 GitHub Issues를 활용해주세요
-- 법적 문제나 사이트 정책 위반 시 즉시 사용을 중단하세요
-
-### 추가 리소스
-- [Selenium 공식 문서](https://selenium-python.readthedocs.io/)
-- [Python Requests 문서](https://requests.readthedocs.io/)
-- [웹 스크래핑 윤리 가이드](https://blog.apify.com/web-scraping-ethics/)
+실행 전 확인사항:
+- [ ] ChromeDriver 설치됨
+- [ ] config.py 설정 완료
+- [ ] 지점 정보 정확함 ('hongdae' 또는 'gangnam')
+- [ ] 테마명 정확함
+- [ ] 날짜 형식 올바름 ('YYYY-MM-DD')
+- [ ] 사용자 정보 입력 완료
 
 ---
 
-**⚠️ 면책 조항**: 이 스크립트는 교육 목적으로만 제공됩니다. 실제 사용으로 인한 모든 책임은 사용자에게 있으며, 사이트 이용약관 위반이나 법적 문제에 대해서는 개발자가 책임지지 않습니다.
+**⚠️ 주의사항**: 
+- 이 도구는 개인적 용도로만 사용하세요
+- 과도한 요청으로 서버에 부하를 주지 마세요
+- 사이트 이용약관을 준수하세요

@@ -3,7 +3,6 @@
 
 import requests
 import time
-import json
 from datetime import datetime, timedelta
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -29,15 +28,18 @@ class ZeroWorldReservation:
         self.csrf_token = None
         
         # 로깅 설정
-        logging.basicConfig(level=logging.DEBUG)
+        logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"예약 시스템 초기화: {self.store_name}")
         
-        # requests 로깅 활성화
+        # 날짜별 동적 테마 매핑 저장소 {date_str: {theme_name: theme_id}}
+        self.date_theme_mappings = {}
+        
+        # requests 로깅 비활성화
         import urllib3
         urllib3.disable_warnings()
-        logging.getLogger("requests").setLevel(logging.DEBUG)
-        logging.getLogger("urllib3").setLevel(logging.DEBUG)
+        logging.getLogger("requests").setLevel(logging.WARNING)
+        logging.getLogger("urllib3").setLevel(logging.WARNING)
         
     def setup_driver(self, headless=False):
         """Chrome WebDriver 설정"""
@@ -52,19 +54,16 @@ class ZeroWorldReservation:
         self.driver.implicitly_wait(10)
     
     def get_csrf_token(self, force_refresh=False):
-        """CSRF 토큰 획득 (캐싱 지원)"""
+        """CSRF 토큰 획득"""
         if self.csrf_token and not force_refresh:
             return self.csrf_token
             
         if not self.driver:
-            self.setup_driver(headless=True)
+            self.setup_driver(headless=False)
         
         try:
-            # 예약 페이지 로드
-            self.logger.debug(f"CSRF 토큰 획득을 위한 페이지 로드: {self.reservation_url}")
             self.driver.get(self.reservation_url)
             time.sleep(2)
-            self.logger.debug(f"현재 페이지 URL: {self.driver.current_url}")
             
             # meta 태그에서 CSRF 토큰 찾기
             csrf_selectors = [
@@ -80,7 +79,6 @@ class ZeroWorldReservation:
                     token = element.get_attribute('content') or element.get_attribute('value')
                     if token:
                         self.csrf_token = token
-                        self.logger.info("CSRF 토큰 획득 성공")
                         return token
                 except:
                     continue
@@ -110,86 +108,13 @@ class ZeroWorldReservation:
         try:
             if self.driver:
                 selenium_cookies = self.driver.get_cookies()
-                self.logger.debug(f"🍪 Selenium 쿠키 개수: {len(selenium_cookies)}")
                 for cookie in selenium_cookies:
                     self.session.cookies.set(cookie['name'], cookie['value'])
-                    self.logger.debug(f"🍪 쿠키 추가: {cookie['name']}={cookie['value'][:20]}...")
-                self.logger.info(f"✅ 세션 쿠키 동기화 완료: {len(selenium_cookies)}개")
         except Exception as e:
-            self.logger.error(f"❌ 쿠키 동기화 실패: {e}")
+            self.logger.error(f"쿠키 동기화 실패: {e}")
         
-    def analyze_page_structure(self):
-        """페이지 구조 분석"""
-        if not self.driver:
-            self.setup_driver()
-        
-        self.logger.info(f"🔍 페이지 구조 분석 시작: {self.reservation_url}")    
-        self.driver.get(self.reservation_url)
-        time.sleep(3)
-        self.logger.debug(f"페이지 로드 완료: {self.driver.current_url}")
-        
-        # JavaScript 실행으로 페이지 구조 분석
-        analysis_script = """
-        return {
-            forms: Array.from(document.forms).map(form => ({
-                action: form.action,
-                method: form.method,
-                elements: Array.from(form.elements).map(el => ({
-                    name: el.name,
-                    type: el.type,
-                    id: el.id,
-                    className: el.className
-                }))
-            })),
-            
-            buttons: Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"]')).map(btn => ({
-                text: btn.textContent || btn.value,
-                type: btn.type,
-                id: btn.id,
-                className: btn.className
-            })),
-            
-            dateElements: Array.from(document.querySelectorAll('[class*="date"], [id*="date"], [data-*="date"]')).map(el => ({
-                tag: el.tagName,
-                id: el.id,
-                className: el.className,
-                textContent: el.textContent.slice(0, 50)
-            })),
-            
-            timeElements: Array.from(document.querySelectorAll('[class*="time"], [id*="time"]')).map(el => ({
-                tag: el.tagName,
-                id: el.id,
-                className: el.className,
-                textContent: el.textContent.slice(0, 50)
-            })),
-            
-            apiEndpoints: Array.from(document.scripts).map(script => script.innerHTML)
-                .join(' ')
-                .match(/\/api\/[^\s"']+/g) || [],
-                
-            ajaxCalls: window.jQuery ? 'jQuery detected' : 'No jQuery',
-            
-            reservationData: window.reservationData || 'No reservation data found',
-            
-            // 실제 예약 관련 스크립트나 변수 찾기
-            globalVars: Object.keys(window).filter(key => 
-                ['reservation', 'booking', 'calendar', 'schedule'].some(term => 
-                    key.toLowerCase().includes(term)
-                )
-            )
-        };
-        """
-        
-        try:
-            result = self.driver.execute_script(analysis_script)
-            self.logger.info("페이지 구조 분석 완료")
-            return result
-        except Exception as e:
-            self.logger.error(f"페이지 분석 실패: {e}")
-            return None
-    
-    def get_available_times(self, target_date, user_info=None):
-        """실제 API를 사용하여 예약 가능한 시간 조회"""
+    def get_available_times_for_theme(self, target_date, theme_id, user_info=None, theme_name=None):
+        """특정 테마의 예약 가능한 시간 조회"""
         try:
             # CSRF 토큰 획득
             csrf_token = self.get_csrf_token()
@@ -202,7 +127,6 @@ class ZeroWorldReservation:
             
             # API 호출
             api_url = f"{self.base_url}/reservation/theme"
-            self.logger.info(f"🔗 API 호출 URL: {api_url}")
             
             headers = {
                 'accept': 'application/json, text/javascript, */*; q=0.01',
@@ -228,114 +152,138 @@ class ZeroWorldReservation:
                 'paymentType': '1'
             }
             
-            self.logger.info(f"📤 POST 데이터: {data}")
-            self.logger.info(f"🔑 CSRF 토큰: {csrf_token}")
-            self.logger.debug(f"📋 요청 헤더: {headers}")
-            
             response = self.session.post(api_url, headers=headers, data=data)
-            
-            self.logger.info(f"📥 응답 상태코드: {response.status_code}")
-            self.logger.info(f"📥 응답 헤더: {dict(response.headers)}")
             
             if response.status_code == 200:
                 try:
                     result = response.json()
-                    self.logger.info("✅ API 호출 성공")
-                    self.logger.info(f"📄 응답 데이터: {json.dumps(result, ensure_ascii=False, indent=2)}")
                     
-                    # 응답에서 예약 가능한 시간 추출
-                    available_times = self.extract_available_times(result)
-                    self.logger.info(f"⏰ 예약 가능한 시간: {available_times}")
+                    # 응답에서 특정 테마의 예약 가능한 시간 추출
+                    theme_mapping = self.extract_theme_info(result)
+                    
+                    # 날짜별 테마 매핑 업데이트
+                    if theme_mapping:
+                        date_str = target_date.strftime('%Y-%m-%d')
+                        self.date_theme_mappings[date_str] = theme_mapping
+                    
+                    available_times = self.extract_available_times(result, target_theme_id=theme_id, theme_name=theme_name, target_date=target_date)
+                    
                     return available_times
                     
                 except ValueError as e:
-                    self.logger.error(f"❌ JSON 파싱 실패: {e}")
-                    self.logger.error(f"📄 응답 내용 (원본): {response.text[:1000]}")
+                    self.logger.error(f"JSON 파싱 실패: {e}")
                     return []
             else:
-                self.logger.error(f"❌ API 요청 실패: {response.status_code}")
-                self.logger.error(f"📄 응답 내용: {response.text[:1000]}")
+                self.logger.error(f"API 요청 실패: {response.status_code}")
                 return []
                 
         except Exception as e:
             self.logger.error(f"예약 가능 시간 조회 실패: {e}")
             return []
     
-    def extract_available_times(self, api_response):
-        """API 응답에서 예약 가능한 시간 추출"""
+    def extract_available_times(self, api_response, target_theme_id=None, theme_name=None, target_date=None):
+        """API 응답에서 예약 가능한 시간 추출 (특정 테마 필터링 지원)"""
         available_times = []
         
         try:
-            # API 응답에서 times 섹션 추출
             if isinstance(api_response, dict) and 'times' in api_response:
                 times_data = api_response['times']
                 
-                # 각 테마의 시간 정보 확인
                 for theme_id, time_slots in times_data.items():
+                    # 특정 테마 ID가 지정된 경우 해당 테마만 필터링
+                    if target_theme_id is not None and str(theme_id) != str(target_theme_id):
+                        continue
+                    
                     if isinstance(time_slots, list):
                         for slot in time_slots:
                             if isinstance(slot, dict) and 'time' in slot and 'reservation' in slot:
-                                # reservation이 false인 경우가 예약 가능
                                 if not slot['reservation']:
                                     time_str = slot['time']
                                     # HH:MM:SS 형식을 HH:MM으로 변환
                                     if time_str.count(':') == 2:
                                         time_str = time_str.rsplit(':', 1)[0]
                                     available_times.append(time_str)
-                                    self.logger.debug(f"예약 가능한 시간 발견: 테마 {theme_id}, 시간 {time_str}")
             
-            self.logger.info(f"총 {len(available_times)}개의 예약 가능한 시간 발견: {available_times}")
+            # 로깅 메시지 개선
+            if target_theme_id is not None:
+                if theme_name is None and target_date is not None:
+                    theme_name = self.get_theme_name_by_id(target_theme_id, target_date)
+                if theme_name:
+                    self.logger.info(f"테마 '{theme_name}'에서 {len(available_times)}개의 예약 가능한 시간 발견: {available_times}")
+            
             return available_times
             
         except Exception as e:
             self.logger.error(f"시간 데이터 추출 실패: {e}")
             return []
     
+    def extract_theme_info(self, api_response):
+        """API 응답에서 테마 정보 추출"""
+        theme_mapping = {}
+        
+        try:
+            if isinstance(api_response, dict) and 'data' in api_response:
+                theme_data_list = api_response['data']
+                if isinstance(theme_data_list, list):
+                    for theme_data in theme_data_list:
+                        if isinstance(theme_data, dict) and 'PK' in theme_data and 'title' in theme_data:
+                            theme_id = str(theme_data['PK'])
+                            theme_title = theme_data['title']
+                            
+                            # "[홍대] NOX" -> "NOX" 형태로 정리
+                            clean_title = theme_title
+                            if '] ' in theme_title:
+                                clean_title = theme_title.split('] ', 1)[1]
+                            
+                            theme_mapping[clean_title] = theme_id
+                
+                return theme_mapping
+                
+        except Exception as e:
+            self.logger.error(f"테마 정보 추출 실패: {e}")
+            
+        return theme_mapping
+    
     def make_reservation(self, date, target_time, theme_id, user_info):
-        """예약 실행 - 2단계 프로세스"""
+        """예약 실행"""
         if not self.driver:
             self.setup_driver()
         
         try:
-            # 예약 페이지 로드
             self.logger.info("예약 페이지 로드 중...")
             self.driver.get(self.reservation_url)
             time.sleep(3)
             
-            # === 1단계: 테마, 시간, 날짜 선택 ===
-            self.logger.info("1단계: 테마, 시간, 날짜 선택")
+            # 1단계: 테마, 시간, 날짜 선택
+            self.logger.info("테마, 시간, 날짜 선택 중...")
             
-            # 1. 날짜 선택 (datepicker에서 클릭)
+            # 날짜 선택
             target_day = date.day
             date_elements = self.driver.find_elements(By.CSS_SELECTOR, '.datepicker--cell')
             
             for elem in date_elements:
                 if elem.text.strip() == str(target_day) and elem.is_enabled():
                     elem.click()
-                    self.logger.info(f"날짜 선택: {date.strftime('%Y-%m-%d')} ({target_day}일)")
+                    self.logger.info(f"날짜 선택: {date.strftime('%Y-%m-%d')}")
                     time.sleep(1)
                     break
             else:
-                # datepicker에서 찾지 못한 경우 숨겨진 필드에 직접 설정
                 date_str = date.strftime('%Y-%m-%d')
                 date_input = self.driver.find_element(By.NAME, 'reservationDate')
                 self.driver.execute_script(f"arguments[0].value = '{date_str}';", date_input)
-                self.logger.warning(f"날짜를 datepicker에서 찾지 못해 숨겨진 필드에 설정: {date_str}")
             
-            # 2. 테마 선택
+            # 테마 선택
             theme_selector = self.driver.find_element(By.CSS_SELECTOR, f'input[name="themePK"][value="{theme_id}"]')
             if not theme_selector.is_selected():
-                # 라디오 버튼이 숨겨져 있으므로 JavaScript로 클릭
                 self.driver.execute_script("arguments[0].click();", theme_selector)
                 self.logger.info(f"테마 선택: {theme_id}")
                 time.sleep(1)
             
-            # 3. 시간 선택 - HH:MM 형식을 HH:MM:SS로 변환
+            # 시간 선택
             time_with_seconds = f"{target_time}:00"
             try:
                 time_selector = self.driver.find_element(By.CSS_SELECTOR, f'input[name="reservationTime"][value="{time_with_seconds}"]')
                 if not time_selector.is_selected():
-                    # 시간 라디오 버튼도 숨겨져 있을 수 있으므로 JavaScript로 클릭
                     self.driver.execute_script("arguments[0].click();", time_selector)
                     self.logger.info(f"시간 선택: {time_with_seconds}")
                     time.sleep(1)
@@ -343,16 +291,15 @@ class ZeroWorldReservation:
                 self.logger.error(f"시간 {time_with_seconds}을 찾을 수 없습니다")
                 return {"success": False, "message": f"시간 {target_time}을 찾을 수 없습니다"}
             
-            # 4. NEXT 버튼 클릭하여 2단계로 이동
+            # NEXT 버튼 클릭
             next_btn = self.driver.find_element(By.ID, 'nextBtn')
             next_btn.click()
-            self.logger.info("NEXT 버튼 클릭 - 2단계로 이동")
+            self.logger.info("다음 단계로 이동")
             time.sleep(2)
             
-            # === 2단계: 사용자 정보 입력 ===
-            self.logger.info("2단계: 사용자 정보 입력")
+            # 2단계: 사용자 정보 입력
+            self.logger.info("사용자 정보 입력 중...")
             
-            # 사용자 정보 입력 필드들이 나타날 때까지 대기
             WebDriverWait(self.driver, 10).until(
                 EC.visibility_of_element_located((By.NAME, "name"))
             )
@@ -361,130 +308,84 @@ class ZeroWorldReservation:
             name_field = self.driver.find_element(By.NAME, 'name')
             name_field.clear()
             name_field.send_keys(user_info['name'])
-            self.logger.info(f"이름 입력: {user_info['name']}")
             
             # 전화번호 입력
             phone_field = self.driver.find_element(By.NAME, 'phone')
             phone_field.clear()
             phone_field.send_keys(user_info['phone'])
-            self.logger.info(f"전화번호 입력: {user_info['phone']}")
             
             # 인원수 선택
             people_select = self.driver.find_element(By.NAME, 'people')
             people_select.click()
             people_option = self.driver.find_element(By.CSS_SELECTOR, f'option[value="{user_info["people_count"]}"]')
             people_option.click()
-            self.logger.info(f"인원수 선택: {user_info['people_count']}명")
             
-            # 정책 동의 체크박스 (필수) - label 클릭 방식
+            # 정책 동의 체크박스
             try:
                 policy_checkbox = self.driver.find_element(By.NAME, 'policy')
-                
-                # 방법 1: 부모 label 클릭 (가장 효과적)
                 parent_label = policy_checkbox.find_element(By.XPATH, '..')
                 parent_label.click()
-                self.logger.info("개인정보처리방침 동의 (label 클릭)")
                 time.sleep(1)
                 
-                # 체크 상태 확인 및 재시도
                 if not policy_checkbox.is_selected():
-                    # 방법 2: JavaScript로 강제 체크
                     self.driver.execute_script("arguments[0].checked = true;", policy_checkbox)
-                    self.logger.info("개인정보처리방침 동의 (JavaScript 강제 체크)")
                     time.sleep(1)
                 
-                # 최종 확인
-                if policy_checkbox.is_selected():
-                    self.logger.info("✅ 개인정보처리방침 동의 완료")
-                else:
-                    self.logger.warning("⚠️ 개인정보처리방침 동의 상태 불확실")
-                    
             except Exception as e:
                 self.logger.error(f"정책 동의 체크박스 처리 실패: {e}")
                 return {"success": False, "message": "정책 동의 체크박스를 찾을 수 없습니다"}
             
             time.sleep(1)
             
-            # 5. 예약하기 버튼 클릭
+            # 예약하기 버튼 클릭
             reservation_btn = self.driver.find_element(By.ID, 'reservationBtn')
             reservation_btn.click()
-            self.logger.info("예약하기 버튼 클릭")
+            self.logger.info("예약 요청 전송")
             
-            # 6. Alert 처리 (정책 동의 관련)
+            # Alert 처리
             try:
                 WebDriverWait(self.driver, 3).until(EC.alert_is_present())
                 alert = self.driver.switch_to.alert
                 alert_text = alert.text
                 self.logger.warning(f"Alert 발생: {alert_text}")
-                alert.accept()  # Alert 닫기
+                alert.accept()
                 
                 if "개인정보" in alert_text or "동의" in alert_text:
                     return {"success": False, "message": f"정책 동의 필요: {alert_text}"}
             except:
-                # Alert가 없으면 정상 진행
                 pass
             
-            # 7. 결과 확인 - 페이지 변화 대기
+            # 결과 확인
             time.sleep(3)
             
-            # 성공/실패 메시지 확인
             try:
                 current_url = self.driver.current_url
                 page_source = self.driver.page_source
                 
-                self.logger.info(f"예약 후 URL: {current_url}")
-                
-                # 다양한 성공 패턴 확인
+                # 성공 패턴 확인
                 success_patterns = [
                     ("예약" in page_source and "완료" in page_source),
                     ("예약" in page_source and "성공" in page_source),
                     ("완료" in page_source),
                     ("성공" in page_source),
                     ("감사" in page_source),
-                    ("확인" in page_source and "예약" in page_source),
                     ("success" in current_url.lower()),
                     ("complete" in current_url.lower()),
-                    ("confirm" in current_url.lower()),
-                    ("thank" in current_url.lower()),
                 ]
                 
-                # 성공 패턴 중 하나라도 매치되면 성공
-                for i, pattern in enumerate(success_patterns):
+                for pattern in success_patterns:
                     if pattern:
-                        self.logger.info(f"✅ 성공 패턴 {i+1} 매치: 예약 성공으로 판단")
                         return {"success": True, "message": "예약이 완료되었습니다"}
                 
-                # 명확한 실패 메시지 확인
-                error_patterns = [
-                    "오류",
-                    "실패", 
-                    "error",
-                    "failed",
-                    "잘못",
-                    "불가능"
-                ]
-                
-                for error in error_patterns:
-                    if error in page_source.lower():
-                        return {"success": False, "message": f"예약 실패: {error} 관련 메시지 발견"}
-                
-                # 예약하기 버튼이 여전히 존재하는지 확인 (실패 징후)
+                # 예약하기 버튼이 사라졌는지 확인
                 try:
                     reservation_btn = self.driver.find_element(By.ID, 'reservationBtn')
-                    if reservation_btn.is_displayed():
-                        self.logger.warning("⚠️ 예약하기 버튼이 여전히 표시됨 - 예약이 처리되지 않았을 수 있음")
-                        # 하지만 이것만으로는 실패로 판단하지 않음
+                    if not reservation_btn.is_displayed():
+                        return {"success": True, "message": "예약이 완료되었습니다"}
                 except:
-                    # 버튼이 사라졌다면 좋은 신호
-                    self.logger.info("✅ 예약하기 버튼이 사라짐 - 좋은 신호")
-                    return {"success": True, "message": "예약하기 버튼이 사라져 예약 완료로 추정"}
+                    return {"success": True, "message": "예약이 완료되었습니다"}
                 
-                # 기본값: URL이 변하지 않았더라도 Alert 없이 진행되었다면 성공으로 간주
-                if current_url == self.reservation_url:
-                    self.logger.info("🤔 URL 변화 없음, 하지만 오류 없이 진행 - 성공으로 추정")
-                    return {"success": True, "message": "예약이 정상적으로 처리된 것으로 추정됩니다"}
-                else:
-                    return {"success": True, "message": f"URL이 변경되어 예약 완료로 추정: {current_url}"}
+                return {"success": True, "message": "예약이 정상적으로 처리된 것으로 추정됩니다"}
                 
             except Exception as e:
                 return {"success": False, "message": f"결과 확인 실패: {str(e)}"}
@@ -493,133 +394,113 @@ class ZeroWorldReservation:
             self.logger.error(f"예약 실행 실패: {e}")
             return {"success": False, "message": str(e)}
     
-    def find_date_selector(self, target_date):
-        """날짜 선택자 찾기"""
+    def check_and_book(self, target_date, time_range, theme_name, user_info):
+        """특정 날짜에 예약 가능한 시간이 있는지 확인하고 예약 시도"""
+        self.logger.info(f"예약 확인: {target_date.strftime('%Y-%m-%d')} {time_range['start']}-{time_range['end']} (테마: {theme_name})")
+        
+        try:
+            # 먼저 해당 날짜의 모든 테마 정보를 가져와서 매핑 업데이트
+            self.get_available_times_for_theme(target_date, None, user_info, theme_name)
+            
+            # 테마명으로 테마 ID 찾기
+            try:
+                theme_id = self.get_theme_id_by_name(theme_name, target_date)
+            except ValueError as e:
+                return {"success": False, "message": str(e)}
+            
+            # 특정 테마의 예약 가능 시간 확인
+            available_times = self.get_available_times_for_theme(target_date, theme_id, user_info, theme_name)
+            
+            if available_times:
+                # 시간 구간 내에서 예약 가능한 시간 찾기
+                available_in_range = self.find_available_time_in_range(available_times, time_range)
+                
+                if available_in_range:
+                    target_time = available_in_range[0]
+                    self.logger.info(f"예약 가능한 시간 발견! 예약 시도: {target_time}")
+                    
+                    result = self.make_reservation(target_date, target_time, theme_id, user_info)
+                    
+                    if result["success"]:
+                        self.logger.info(f"예약 성공: {result['message']} (시간: {target_time})")
+                        return {"success": True, "message": result['message'], "time": target_time}
+                    else:
+                        self.logger.error(f"예약 실패: {result['message']}")
+                        return {"success": False, "message": result['message'], "time": target_time}
+                else:
+                    self.logger.info(f"시간 구간 {time_range['start']}-{time_range['end']} 내 예약 가능한 시간 없음")
+                    return {"success": False, "message": f"시간 구간 {time_range['start']}-{time_range['end']} 내 예약 가능한 시간 없음"}
+            else:
+                return {"success": False, "message": f"테마 '{theme_name}'에서 예약 가능한 시간 없음"}
+            
+        except Exception as e:
+            self.logger.error(f"예약 확인 오류: {e}")
+            return {"success": False, "message": f"예약 확인 오류: {str(e)}"}
+    
+    def get_theme_id_by_name(self, theme_name, target_date):
+        """특정 날짜의 테마명으로 테마 ID 찾기"""
         date_str = target_date.strftime('%Y-%m-%d')
         
-        # 여러 가능한 선택자 시도
-        selectors = [
-            f'[data-date="{date_str}"]',
-            f'[value="{date_str}"]',
-            f'.date-{date_str}',
-            f'#{date_str}',
-        ]
-        
-        for selector in selectors:
-            try:
-                element = self.driver.find_element(By.CSS_SELECTOR, selector)
-                return element
-            except:
-                continue
-                
-        # 텍스트로 찾기
-        try:
-            elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{target_date.day}')]")
-            for element in elements:
-                if element.is_enabled():
-                    return element
-        except:
-            pass
+        if date_str in self.date_theme_mappings:
+            theme_mapping = self.date_theme_mappings[date_str]
+            if theme_name in theme_mapping:
+                theme_id = theme_mapping[theme_name]
+                self.logger.info(f"테마명 변환: '{theme_name}' -> ID '{theme_id}' ({date_str})")
+                return theme_id
             
-        return None
+            available_themes = list(theme_mapping.keys())
+            raise ValueError(f"테마를 찾을 수 없습니다: '{theme_name}'. {date_str}에 사용 가능한 테마: {available_themes}")
+        else:
+            raise ValueError(f"{date_str}에 대한 테마 정보가 로드되지 않았습니다.")
     
-    def find_time_selector(self, target_time):
-        """시간 선택자 찾기"""
-        time_selectors = [
-            f'[data-time="{target_time}"]',
-            f'[value="{target_time}"]',
-            f'.time-{target_time.replace(":", "")}',
-        ]
+    def get_theme_name_by_id(self, theme_id, target_date):
+        """특정 날짜의 테마 ID로 테마명 찾기"""
+        date_str = target_date.strftime('%Y-%m-%d')
         
-        for selector in time_selectors:
+        if date_str in self.date_theme_mappings:
+            theme_mapping = self.date_theme_mappings[date_str]
+            for theme_name, tid in theme_mapping.items():
+                if str(tid) == str(theme_id):
+                    return theme_name
+        
+        # 모든 날짜에서 찾기 (fallback)
+        for date_mapping in self.date_theme_mappings.values():
+            for theme_name, tid in date_mapping.items():
+                if str(tid) == str(theme_id):
+                    return theme_name
+        
+        return f"테마ID:{theme_id}"  # 테마명을 찾지 못한 경우 ID 표시
+    
+    def list_available_themes(self):
+        """모든 날짜의 사용 가능한 테마 목록 반환"""
+        all_themes = set()
+        for date_mapping in self.date_theme_mappings.values():
+            all_themes.update(date_mapping.keys())
+        return list(all_themes)
+    
+    def find_available_time_in_range(self, available_times, time_range):
+        """시간 구간 내에서 예약 가능한 시간 찾기"""
+        start_time = datetime.strptime(time_range['start'], '%H:%M').time()
+        end_time = datetime.strptime(time_range['end'], '%H:%M').time()
+        
+        available_in_range = []
+        
+        for time_str in available_times:
             try:
-                element = self.driver.find_element(By.CSS_SELECTOR, selector)
-                return element
-            except:
-                continue
+                if time_str.count(':') == 2:
+                    time_str = time_str.rsplit(':', 1)[0]
                 
-        # 텍스트로 찾기
-        try:
-            elements = self.driver.find_elements(By.XPATH, f"//*[contains(text(), '{target_time}')]")
-            for element in elements:
-                if element.is_enabled():
-                    return element
-        except:
-            pass
-            
-        return None
-    
-    def find_theme_selector(self, theme_id):
-        """테마 선택자 찾기"""
-        theme_selectors = [
-            f'[data-theme="{theme_id}"]',
-            f'[value="{theme_id}"]',
-            f'#{theme_id}',
-        ]
-        
-        for selector in theme_selectors:
-            try:
-                element = self.driver.find_element(By.CSS_SELECTOR, selector)
-                return element
-            except:
-                continue
+                time_obj = datetime.strptime(time_str, '%H:%M').time()
                 
-        return None
-    
-    def fill_user_info(self, user_info):
-        """사용자 정보 입력"""
-        info_mapping = {
-            'name': ['name', 'username', 'user_name'],
-            'phone': ['phone', 'tel', 'mobile'],
-            'email': ['email', 'mail'],
-            'people_count': ['people', 'count', 'person']
-        }
-        
-        for field, values in info_mapping.items():
-            if field in user_info:
-                for field_name in values:
-                    try:
-                        element = self.driver.find_element(By.NAME, field_name)
-                        element.clear()
-                        element.send_keys(str(user_info[field]))
-                        break
-                    except:
-                        continue
-    
-    def monitor_and_book(self, target_date, target_time, theme_id, user_info, check_interval=30):
-        """주기적으로 확인하며 예약 시도"""
-        self.logger.info(f"예약 모니터링 시작: {target_date} {target_time}")
-        
-        while True:
-            try:
-                # 예약 가능 시간 확인
-                available_times = self.get_available_times(target_date, user_info)
-                
-                if available_times:
-                    if target_time in available_times:
-                        self.logger.info("예약 가능한 시간 발견! 예약 시도...")
-                        
-                        result = self.make_reservation(target_date, target_time, theme_id, user_info)
-                        
-                        if result["success"]:
-                            self.logger.info(f"예약 성공: {result['message']}")
-                            return result
-                        else:
-                            self.logger.error(f"예약 실패: {result['message']}")
-                            return result  # 실패해도 종료
-                    else:
-                        self.logger.info(f"원하는 시간({target_time})이 없음. 가능한 시간: {available_times}")
-                else:
-                    self.logger.info(f"시간 슬롯을 찾을 수 없음. {check_interval}초 후 재시도...")
+                if start_time <= time_obj <= end_time:
+                    available_in_range.append(time_str)
                     
-                time.sleep(check_interval)
-                
-            except KeyboardInterrupt:
-                self.logger.info("모니터링 중단")
-                break
-            except Exception as e:
-                self.logger.error(f"모니터링 오류: {e}")
-                time.sleep(check_interval)
+            except ValueError:
+                continue
+        
+        available_in_range.sort()
+        self.logger.info(f"시간 구간 {time_range['start']}-{time_range['end']} 내 예약 가능한 시간: {available_in_range}")
+        return available_in_range
     
     def cleanup(self):
         """리소스 정리"""
@@ -629,37 +510,96 @@ class ZeroWorldReservation:
 
 def main():
     """메인 실행 함수"""
-    # config.py의 RESERVATION_CONFIG 사용
     config = RESERVATION_CONFIG
     
-    target_date = datetime.strptime(config['target_date'], '%Y-%m-%d')
-    target_time = config['target_time']
-    theme_id = config['theme_id']
+    # 여러 날짜 지원
+    target_dates = []
+    if 'target_dates' in config:
+        for date_str in config['target_dates']:
+            target_dates.append(datetime.strptime(date_str, '%Y-%m-%d'))
+    elif 'target_date' in config:
+        target_dates.append(datetime.strptime(config['target_date'], '%Y-%m-%d'))
+    else:
+        raise ValueError("target_dates 또는 target_date 설정이 필요합니다")
+    
+    if 'time_range' not in config:
+        raise ValueError("time_range 설정이 필요합니다")
+    
+    time_range = config['time_range']
+    if 'start' not in time_range or 'end' not in time_range:
+        raise ValueError("time_range에 start와 end 시간을 모두 지정해야 합니다")
+    
+    if 'theme' not in config:
+        raise ValueError("theme 설정이 필요합니다")
+    
+    theme_name = config['theme']
     user_info = config['user_info']
     check_interval = config['check_interval']
     
-    # 예약 시스템 초기화 (설정에서 지정된 지점 사용)
+    # 예약 시스템 초기화
     store = config['store']
     reservation = ZeroWorldReservation(store=store)
     
     try:
-        # 페이지 구조 분석 (첫 실행시)
-        print(f"{reservation.store_name} 페이지 구조 분석 중...")
-        structure = reservation.analyze_page_structure()
-        if structure:
-            print(json.dumps(structure, indent=2, ensure_ascii=False))
+        # 테마 정보 로드 (첫 번째 날짜로 초기화)
+        print(f"테마 정보 로드 중...")
+        attempts = 0
+        max_attempts = 3
+        while attempts < max_attempts and not reservation.date_theme_mappings:
+            attempts += 1
+            print(f"테마 정보 로드 시도 {attempts}/{max_attempts}...")
+            reservation.get_available_times_for_theme(target_dates[0], None, user_info, theme_name)
+            if reservation.date_theme_mappings:
+                break
+            time.sleep(2)  # 잠깐 대기 후 재시도
         
-        # 예약 모니터링 및 실행
-        print(f"예약 시도: {target_date.strftime('%Y-%m-%d')} {target_time}")
-        result = reservation.monitor_and_book(
-            target_date=target_date,
-            target_time=target_time,
-            theme_id=theme_id,
-            user_info=user_info,
-            check_interval=check_interval
-        )
+        if not reservation.date_theme_mappings:
+            print(f"⚠️  테마 정보 로드 실패. API 응답을 확인해주세요.")
+            return
         
-        print(f"최종 결과: {result}")
+        print(f"대상 테마: '{theme_name}'")
+        
+        # 사용 가능한 테마 목록 표시
+        available_themes = reservation.list_available_themes()
+        if available_themes:
+            print(f"현재 사용 가능한 테마: {available_themes}")
+        
+        # 예약이 성공할 때까지 주기적으로 모든 날짜 확인
+        print(f"📅 {len(target_dates)}개 날짜에 대해 {check_interval}초마다 확인합니다...")
+        
+        while True:
+            try:
+                success = False
+                for i, target_date in enumerate(target_dates, 1):
+                    print(f"[{i}/{len(target_dates)}] 📅 예약 확인: {target_date.strftime('%Y-%m-%d')} {time_range['start']}-{time_range['end']} (테마: {theme_name})")
+                    
+                    result = reservation.check_and_book(
+                        target_date=target_date,
+                        time_range=time_range,
+                        theme_name=theme_name,
+                        user_info=user_info
+                    )
+                    
+                    if result["success"]:
+                        booked_time = result.get("time", "알 수 없음")
+                        print(f"✅ 예약 성공: {target_date.strftime('%Y-%m-%d')} {booked_time} - {result['message']}")
+                        success = True
+                        break
+                    else:
+                        failed_time = result.get("time", "")
+                        time_info = f" {failed_time}" if failed_time else ""
+                        print(f"❌ 예약 실패: {target_date.strftime('%Y-%m-%d')}{time_info} - {result['message']}")
+                
+                if success:
+                    print("예약이 완료되었습니다!")
+                    break
+                else:
+                    print(f"모든 날짜에서 예약 불가. {check_interval}초 후 다시 시도...")
+                    time.sleep(check_interval)
+                    
+            except KeyboardInterrupt:
+                print("사용자에 의해 중단되었습니다.")
+                break
         
     except Exception as e:
         print(f"오류 발생: {e}")
