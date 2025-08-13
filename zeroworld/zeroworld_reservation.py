@@ -20,7 +20,7 @@ class ZeroWorldReservation:
         
         self.store_config = STORE_CONFIGS[store]
         self.base_url = self.store_config['base_url']
-        self.reservation_url = self.store_config['reservation_url']
+        self.reservation_url = f"{self.base_url}/reservation"
         self.store_name = self.store_config['name']
         
         self.session = requests.Session()
